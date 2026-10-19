@@ -111,6 +111,24 @@ details summary{cursor:pointer;font-weight:600;color:var(--fg)}
 details ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
 code{font-family:var(--mono);font-size:12.5px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* ---------- auto demo ---------- */
+.demo-btn{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);border-radius:999px;padding:8px 16px;font:600 14px var(--sans);cursor:pointer;margin-top:10px}
+.demo-btn:hover{filter:brightness(1.08)}
+.demo-btn i{display:inline-block;width:0;height:0;border-left:9px solid currentColor;border-top:6px solid transparent;border-bottom:6px solid transparent}
+.demo-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:max(14px,env(safe-area-inset-bottom));width:min(760px,calc(100vw - 24px));background:var(--surface);color:var(--fg);border:1px solid var(--accent);border-radius:14px;box-shadow:0 10px 36px rgba(0,0,0,.25);padding:14px 16px 12px;z-index:50}
+.demo-bar .dk{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--accent)}
+.demo-bar h4{margin:4px 0 4px;font-size:18px}
+.demo-bar p{margin:0;font-size:15px;line-height:1.45;min-height:44px}
+.demo-bar .dbtn{display:flex;gap:8px;margin-top:10px;align-items:center}
+.demo-bar button{border:1px solid var(--line);background:var(--surface-2);color:var(--fg);border-radius:8px;padding:6px 12px;font:600 13px var(--sans);cursor:pointer}
+.demo-bar button.pri{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.demo-prog{height:4px;background:var(--surface-2);border-radius:2px;overflow:hidden;margin-top:10px}
+.demo-prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s linear}
+.demo-focus{outline:3px solid var(--accent);outline-offset:3px;border-radius:12px;transition:outline-color .3s}
+body.demo-on .wrap{padding-bottom:230px}
+@media (min-width:1000px){.demo-bar{left:16px;transform:none;width:372px;bottom:16px}.demo-bar p{min-height:96px}body.demo-on .wrap{padding-bottom:24px}}
+@media (prefers-reduced-motion: reduce){.demo-prog i{transition:none}}
 </style>
 </head>
 <body>
@@ -121,7 +139,15 @@ code{font-family:var(--mono);font-size:12.5px}
       <p class="sub">Change the data, the executors and the partitions. The cluster below replays the run and tells you what went wrong and how to fix it.</p>
     </div>
     <div class="presets" id="presets" role="group" aria-label="Scenarios"></div>
+    <button class="demo-btn" id="demoBtn" type="button"><i></i>Watch the auto demo (about 70 seconds)</button>
   </header>
+  <div class="demo-bar" id="demoBar" role="status" aria-live="polite" hidden>
+    <div class="dk"><span id="demoStep">Demo</span><span id="demoTime"></span></div>
+    <h4 id="demoTitle"></h4>
+    <p id="demoText"></p>
+    <div class="demo-prog"><i id="demoProg"></i></div>
+    <div class="dbtn"><button class="pri" id="demoPause" type="button">Pause</button><button id="demoNext" type="button">Next step</button><button id="demoExit" type="button">Exit demo</button></div>
+  </div>
 
   <div class="layout">
     <aside class="rail" id="rail" aria-label="Settings"></aside>
@@ -612,6 +638,85 @@ $('#pinBtn').addEventListener('click',function(){
   renderCards();
 });
 refresh(true);
+
+/* ---------- auto demo: a scripted tour that drives the same controls a person would ---------- */
+var demo={on:false,i:0,clock:0,paused:false,tick:null,done:{},speedBefore:'1'};
+function setS(o,auto){Object.assign(S,o);preset=null;refresh(!!auto);}
+function setPreset(id){var p=PRESETS.filter(function(x){return x.id===id})[0];S=Object.assign({},DEF,p.set);preset=id;refresh(true);}
+function tw(key,vals,gap,t0){return vals.map(function(v,k){return {at:t0+k*gap,act:function(){var o={};o[key]=v;setS(o,k===vals.length-1);}};});}
+function pct(x){return Math.round(x*100)+'%';}
+var STEPS=[
+ {t:'A healthy night',focus:'#cards',phases:[
+   {at:0,text:'Start with a well-sized run: 1 billion call records, 8 executors with 8 cores each, so 64 cores in total.',act:function(){setPreset('healthy');}},
+   {at:1800,text:function(){return 'It finishes in '+fmtT(sim.T)+' with '+pct(sim.util)+' of core time used. Every green square below is a core working on a task.';}}],end:7000},
+ {t:'What if we have too few executors?',focus:'#cards',phases:[{at:0,text:'Now take executors away: 8, 6, 4, 3, then 2.'}].concat(tw('workers',[6,4,3,2],800,400)).concat([
+   {at:4000,text:function(){return 'With 2 executors the same job takes '+fmtT(sim.T)+' and misses the '+S.sla+' min target. The cores are still '+pct(sim.util)+' busy, so the cluster is simply short of compute.';}}]),end:9500},
+ {t:'Add executors and watch the time halve',focus:'#cards',phases:[{at:0,text:'Now go the other way: 4, 8, then 16 executors.'}].concat(tw('workers',[4,8,16],900,400)).concat([
+   {at:3400,text:function(){return '16 executors finish in '+fmtT(sim.T)+'. Doubling the executors halves the time, and the cost stays about the same ($'+sim.cost.toFixed(2)+'), because you pay for more machines for less time.';}}]),end:8800},
+ {t:'The festive peak',focus:'#cards',phases:[
+   {at:0,text:'Diwali or Christmas: the same job, but with 3 billion records.',act:function(){setPreset('festive');}},
+   {at:3000,text:function(){return 'On 8 executors it takes '+fmtT(sim.T)+' and misses the '+S.sla+' min target. Scale out before the peak.';}},
+   {at:3300,act:function(){setS({workers:14},true);}},
+   {at:6300,text:function(){return 'With 14 executors it takes '+fmtT(sim.T)+' and fits. Size for the peak, then scale back down after it.';}}],end:11500},
+ {t:'A different problem: one heavy key',focus:'#clusterCv',phases:[
+   {at:0,text:'Now the data is lopsided: one subscriber, a bulk-SMS sender, holds 20% of all rows.',act:function(){setPreset('skew');}},
+   {at:3200,text:function(){return 'Look at the red core. One task of '+fmtMB(sim.hotTask?sim.hotTask.mb:0)+' runs for '+fmtT(sim.mx)+' while the other '+(sim.cores-1)+' cores sit idle. The job takes '+fmtT(sim.T)+' and only '+pct(sim.util)+' of core time is used.';}}],end:9500},
+ {t:'The tempting fix that does not work',focus:'#cards',phases:[{at:0,text:'Throw more machines at it: 16, 32, then 64 executors.'}].concat(tw('workers',[16,32,64],900,400)).concat([
+   {at:3600,text:function(){return 'Still '+fmtT(sim.T)+', and the bill is now $'+Math.round(sim.cost)+'. One task cannot be split across cores, so extra executors just sit idle.';}}]),end:9500},
+ {t:'The real fix: split the hot key',focus:'#diag',phases:[
+   {at:0,text:'Back to 8 executors, and turn on the AQE skew join. Spark splits the oversized partition at run time.',act:function(){setS({workers:8,fix:'aqe'},true);}},
+   {at:3200,text:function(){return 'The one 20 GB task becomes many small ones that spread over all the cores. '+fmtT(sim.T)+', '+pct(sim.util)+' of core time used, $'+sim.cost.toFixed(2)+'.';}}],end:9000},
+ {t:'Even better: avoid the shuffle',focus:'#cards',phases:[
+   {at:0,text:'The price plan table is only 50 MB. Broadcast it to every executor and the big shuffle is not needed at all.',act:function(){setS({bc:true},true);}},
+   {at:3200,text:function(){return 'Now '+fmtT(sim.T)+', with '+fmtMB(sim.movedMB)+' moved over the network instead of 100 GB. Small table plus big table: broadcast first.';}}],end:9000},
+ {t:'Your turn',focus:'#rail',phases:[
+   {at:0,text:'That is the whole story. Drag any slider, pick a scenario at the top, or press a fix button in the diagnosis panel. Pin a baseline to compare before and after.'}],end:6000}
+];
+var demoTotal=STEPS.reduce(function(a,s){return a+s.end;},0);
+function demoClearFocus(){document.querySelectorAll('.demo-focus').forEach(function(e){e.classList.remove('demo-focus');});}
+function demoFocus(sel){demoClearFocus();var e=$(sel);if(!e)return;var el=e.closest('.panel,.rail,.cards')||e;el.classList.add('demo-focus');var r=el.getBoundingClientRect();if(r.top<60||r.top>innerHeight*0.6)el.scrollIntoView({behavior:reduced?'auto':'smooth',block:'start'});}
+function demoEnter(i){
+  demo.i=i;demo.clock=0;var st=STEPS[i];demo.pending=st.phases.slice();
+  $('#demoStep').textContent='Demo, step '+(i+1)+' of '+STEPS.length;$('#demoTitle').textContent=st.t;demoFocus(st.focus);
+}
+function demoRun(p){if(p.text)$('#demoText').textContent=typeof p.text==='function'?p.text():p.text;if(p.act)p.act();}
+function demoTick(){
+  if(!demo.on||demo.paused)return;
+  demo.clock+=100;
+  while(demo.pending.length&&demo.pending[0].at<=demo.clock)demoRun(demo.pending.shift());
+  var elapsed=0;for(var k=0;k<demo.i;k++)elapsed+=STEPS[k].end;elapsed+=demo.clock;
+  $('#demoProg').style.width=Math.min(100,elapsed/demoTotal*100)+'%';
+  $('#demoTime').textContent=Math.max(0,Math.ceil((demoTotal-elapsed)/1000))+' s left';
+  if(demo.clock>=STEPS[demo.i].end){if(demo.i+1<STEPS.length)demoEnter(demo.i+1);else demoExit(true);}
+}
+function demoNext(){
+  if(!demo.on)return;
+  while(demo.pending.length)demoRun(demo.pending.shift());
+  if(demo.i+1<STEPS.length)demoEnter(demo.i+1);else demoExit(true);
+}
+function demoStart(){
+  if(demo.on)return;
+  demo.on=true;demo.paused=false;demo.speedBefore=$('#speed').value;$('#speed').value='2';
+  document.body.classList.add('demo-on');$('#demoBar').hidden=false;$('#demoPause').textContent='Pause';
+  window.scrollTo({top:0,behavior:'auto'});
+  demoEnter(0);demo.tick=setInterval(demoTick,100);demoTick();
+  try{localStorage.setItem('sparkDemoSeen','1');}catch(e){}
+}
+function demoExit(finished){
+  if(!demo.on)return;
+  demo.on=false;clearInterval(demo.tick);demoClearFocus();$('#speed').value=demo.speedBefore;
+  document.body.classList.remove('demo-on');$('#demoBar').hidden=true;
+  if(finished){$('#demoBtn').textContent='Watch the auto demo again';}
+}
+$('#demoBtn').addEventListener('click',function(){if(demo.on)return;demoStart();});
+$('#demoPause').addEventListener('click',function(){demo.paused=!demo.paused;this.textContent=demo.paused?'Resume':'Pause';if(demo.paused)stopPlay();else if(play.p<1)startPlay(false);});
+$('#demoNext').addEventListener('click',demoNext);
+$('#demoExit').addEventListener('click',function(){demoExit(false);});
+['#rail','#presets','#diag','#scrub','#pinBtn'].forEach(function(sel){$(sel).addEventListener('pointerdown',function(){if(demo.on)demoExit(false);});});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&demo.on)demoExit(false);});
+(function(){var seen=false;try{seen=localStorage.getItem('sparkDemoSeen')==='1';}catch(e){}
+  var q=location.search;var force=/[?&]demo=1/.test(q),off=/[?&]demo=0/.test(q);
+  if(!off&&(force||(!seen&&!reduced)))setTimeout(demoStart,1400);})();
 })();
 </script>
 </body>
