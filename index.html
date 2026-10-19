@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spark Cluster Playground</title>
+<meta name="description" content="Interactive Spark compute simulator: change data volume, executors, partitions and skew, and watch the cluster replay the run and diagnose it.">
+<style>html{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout concept: controls rail on the left, live cluster and verdicts on the right. State colors match the explainer images. */
+:root{
+  --bg:#F3F5F1; --surface:#FFFFFF; --surface-2:#EBEFEA; --fg:#18231F; --muted:#59665F; --line:#D5DBD3;
+  --accent:#0E6B54; --accent-soft:#DDF1EA; --on-accent:#FFFFFF;
+  --busy:#34B084; --hot:#D4443B; --spill:#E5A038; --idle:#CBD2CA; --worker:#E4E9E2;
+  --good:#2E8A58; --warn:#A8690F; --bad:#B8362C; --info:#2D6C9E;
+  --good-bg:#E4F3EA; --warn-bg:#FBF0DC; --bad-bg:#FAE6E3; --info-bg:#E3EEF7;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; --sans:"Figtree",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0E1512; --surface:#161F1B; --surface-2:#1D2924; --fg:#E5ECE8; --muted:#97A59D; --line:#2B3832;
+  --accent:#4CC6A0; --accent-soft:#1B3A31; --on-accent:#08201A;
+  --busy:#3DB88C; --hot:#EE6259; --spill:#EDAE4E; --idle:#33403A; --worker:#202C27;
+  --good:#58C486; --warn:#EDB45B; --bad:#F27D73; --info:#7DB4E0;
+  --good-bg:#17301F; --warn-bg:#33270F; --bad-bg:#3A1B18; --info-bg:#15293A; color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --bg:#0E1512; --surface:#161F1B; --surface-2:#1D2924; --fg:#E5ECE8; --muted:#97A59D; --line:#2B3832;
+  --accent:#4CC6A0; --accent-soft:#1B3A31; --on-accent:#08201A;
+  --busy:#3DB88C; --hot:#EE6259; --spill:#EDAE4E; --idle:#33403A; --worker:#202C27;
+  --good:#58C486; --warn:#EDB45B; --bad:#F27D73; --info:#7DB4E0;
+  --good-bg:#17301F; --warn-bg:#33270F; --bad-bg:#3A1B18; --info-bg:#15293A; color-scheme:dark; }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+h1,h2,h3{margin:0;font-weight:700;text-wrap:balance}
+button,input,select{font:inherit;color:inherit}
+.wrap{max-width:1320px;margin:0 auto}
+header{display:flex;flex-direction:column;gap:14px;margin-bottom:18px}
+.title-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px}
+h1{font-size:26px;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0;max-width:70ch}
+.presets{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 14px;cursor:pointer;font-weight:500;font-size:14px;transition:background .15s,border-color .15s}
+.chip:hover{border-color:var(--accent)}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.chip.ghost{background:transparent;color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.layout{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}}
+.rail{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:6px 16px 14px;position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
+@media (max-width:900px){.rail{position:static;max-height:none}}
+.rail h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;font-weight:700}
+.ctl{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:7px 0;border-top:1px solid var(--line)}
+.ctl:first-of-type{border-top:0}
+.ctl label,.ctl .lab{font-weight:500;font-size:14px}
+.ctl output{font-family:var(--mono);font-size:13px;color:var(--accent);font-weight:500;text-align:right}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent);margin:2px 0}
+.ctl .hint{grid-column:1/-1;font-size:12.5px;color:var(--muted);line-height:1.4}
+.seg{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px}
+.seg label{position:relative;cursor:pointer}
+.seg input{position:absolute;opacity:0;inset:0}
+.seg span{display:inline-block;padding:5px 11px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-weight:500;background:var(--surface-2)}
+.seg input:checked + span{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.seg input:focus-visible + span{outline:2px solid var(--accent);outline-offset:2px}
+.tgl{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);cursor:pointer}
+.tgl span.t{font-weight:500;font-size:14px}
+.tgl input{appearance:none;width:38px;height:22px;border-radius:999px;background:var(--idle);position:relative;flex:none;cursor:pointer;transition:background .15s}
+.tgl input::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
+.tgl input:checked{background:var(--accent)}
+.tgl input:checked::after{transform:translateX(16px)}
+.totals{font-family:var(--mono);font-size:12.5px;color:var(--muted);padding:6px 0 2px}
+.stage{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.card .k{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.card .v{font-family:var(--mono);font-size:21px;font-weight:700;margin-top:2px;overflow-wrap:anywhere}
+.card .s{font-size:12px;color:var(--muted);margin-top:1px;min-height:17px}
+.card .d{font-family:var(--mono);font-size:12px;font-weight:700}
+.d.better{color:var(--good)} .d.worse{color:var(--bad)} .d.same{color:var(--muted)}
+.card.bad{border-color:var(--bad)} .card.bad .v{color:var(--bad)}
+.card.good .v{color:var(--good)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.panel h3{font-size:15px}
+.ph{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px 14px;margin-bottom:10px}
+.ph .meta{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--muted)}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+canvas{display:block;width:100%}
+.player{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}
+.player button{border:1px solid var(--line);background:var(--surface-2);border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:600;font-size:13px}
+.player button.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.player input[type=range]{flex:1;min-width:140px;accent-color:var(--accent)}
+.player .clock{font-family:var(--mono);font-size:13px;min-width:92px;text-align:right}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:1100px){.two{grid-template-columns:minmax(0,1fr)}}
+.mem{display:grid;grid-template-columns:minmax(130px,190px) 1fr;gap:6px 10px;align-items:center;font-size:13px}
+.bar{position:relative;height:14px;background:var(--surface-2);border-radius:4px;overflow:visible}
+.bar b{position:absolute;left:0;top:0;bottom:0;border-radius:4px}
+.bar u{position:absolute;top:-4px;bottom:-4px;width:0;border-left:2px dashed var(--fg);text-decoration:none}
+.mem .val{font-family:var(--mono);font-size:12px;color:var(--muted);grid-column:2;margin-top:-4px}
+.diag{display:flex;flex-direction:column;gap:10px}
+.msg{border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:10px 12px;background:var(--surface-2)}
+.msg.bad{border-color:var(--bad);background:var(--bad-bg)} .msg.warn{border-color:var(--warn);background:var(--warn-bg)}
+.msg.good{border-color:var(--good);background:var(--good-bg)} .msg.info{border-color:var(--info);background:var(--info-bg)}
+.msg h4{margin:0 0 2px;font-size:14.5px}
+.msg p{margin:0;font-size:13.5px}
+.msg .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.msg .acts button{border:1px solid var(--accent);background:var(--surface);color:var(--accent);border-radius:8px;padding:4px 11px;cursor:pointer;font-weight:600;font-size:13px}
+.msg .acts button:hover{background:var(--accent);color:var(--on-accent)}
+details{font-size:13.5px;color:var(--muted)}
+details summary{cursor:pointer;font-weight:600;color:var(--fg)}
+details ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+code{font-family:var(--mono);font-size:12.5px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title-row">
+      <h1>Spark Cluster Playground</h1>
+      <p class="sub">Change the data, the executors and the partitions. The cluster below replays the run and tells you what went wrong and how to fix it.</p>
+    </div>
+    <div class="presets" id="presets" role="group" aria-label="Scenarios"></div>
+  </header>
+
+  <div class="layout">
+    <aside class="rail" id="rail" aria-label="Settings"></aside>
+
+    <section class="stage">
+      <div class="cards" id="cards" aria-live="polite"></div>
+
+      <div class="panel">
+        <div class="ph">
+          <h3>The cluster, replayed</h3>
+          <span class="meta" id="clusterMeta"></span>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--busy)"></i>Busy</span>
+          <span><i style="background:var(--spill)"></i>Spilling to disk</span>
+          <span><i style="background:var(--hot)"></i>Hot task (skew)</span>
+          <span><i style="background:var(--idle)"></i>Idle</span>
+        </div>
+        <canvas id="clusterCv" role="img" aria-label="Grid of executors, each a block of core squares coloured by what the core is doing"></canvas>
+        <div class="player">
+          <button id="playBtn" class="primary" type="button">Replay</button>
+          <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Scrub through the run">
+          <select id="speed" aria-label="Playback speed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+          <span class="clock" id="clock">0:00</span>
+        </div>
+      </div>
+
+      <div class="two">
+        <div class="panel">
+          <div class="ph"><h3>Cores busy over time</h3><span class="meta" id="utilMeta"></span></div>
+          <canvas id="utilCv" role="img" aria-label="Stacked area chart of busy cores over the run"></canvas>
+        </div>
+        <div class="panel">
+          <div class="ph"><h3>Task durations, big stage</h3><span class="meta" id="taskMeta"></span></div>
+          <canvas id="taskCv" role="img" aria-label="One bar per task showing how long it ran"></canvas>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><h3>Memory per task</h3><span class="meta" id="memMeta"></span></div>
+        <div class="mem" id="mem"></div>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><h3>What the cluster is telling you</h3><button class="chip" id="pinBtn" type="button">Pin as baseline</button></div>
+        <div class="diag" id="diag"></div>
+      </div>
+
+      <details class="panel">
+        <summary>How the model works (and what it is not)</summary>
+        <ul>
+          <li>Stage 1 joins the transaction table with the price plan table and aggregates. Stage 2 processes the other tables, one or more tasks each.</li>
+          <li>Each task gets a chunk of data. Time per task is its size divided by the speed of one core (20 MB/s for the join stage, 40 MB/s for plain table work), plus 0.15 s of scheduling overhead.</li>
+          <li>A task needs about 2.5x its data size in memory during the join. Each core gets a share of the executor's execution memory (45% of node memory divided by cores). A task that needs more than its share spills, and spilling makes it up to 3x slower.</li>
+          <li>Tasks are handed to whichever core frees up first, like Spark does. The run ends when the last task ends, so one slow task sets the finish time.</li>
+          <li>A shuffle join moves both tables across the network at 200 MB/s per executor. A broadcast join sends the small table to every executor instead.</li>
+          <li>Each task writes one file, unless optimized writes is on, which targets 128 MB files.</li>
+          <li>This is a teaching model with round numbers. It shows direction and relative size of effects. It is not a benchmark of your real jobs.</li>
+        </ul>
+      </details>
+    </section>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(s){return document.querySelector(s)};
+var PARTS=[64,128,200,400,800,1000,2000,4000,8000,16000];
+var K={rate1:20,rate2:40,ovh:0.15,net:200,exp1:2.5,exp2:1.5,pool:0.45,out1:0.3,out2:0.9,bcLimit:1000,aqeThresh:256,split:128,fileTarget:128};
+var DEF={recM:1000,bytes:500,pp:50,nBig:60,bigGB:4,nSmall:340,smallMB:40,hot:0,workers:8,cores:8,mem:32,pi:7,bc:true,fix:'none',salt:16,opt:false,sla:15,price:2};
+var PRESETS=[
+ {id:'healthy',name:'Healthy daily run',set:{}},
+ {id:'few',name:'Too few executors',set:{workers:2}},
+ {id:'festive',name:'Festive peak (3x data)',set:{recM:3000}},
+ {id:'skew',name:'Hot key skew',set:{recM:200,hot:20,bc:false}},
+ {id:'parts',name:'Too few partitions',set:{bc:false,pi:2}}
+];
+var CONTROLS=[
+ {sec:'Data'},
+ {k:'recM',t:'range',l:'Transaction records',min:10,max:5000,step:10,fmt:function(v){return v>=1000?(v/1000).toFixed(v%1000?2:0)+' billion':v+' million'}},
+ {k:'bytes',t:'range',l:'Record size',min:100,max:2000,step:50,fmt:function(v){return v+' bytes'}},
+ {k:'pp',t:'range',l:'Price plan table (1 table)',min:5,max:3000,step:5,fmt:function(v){return v+' MB'},hint:'Small lookup table joined to every transaction.'},
+ {k:'nBig',t:'range',l:'Other tables: big',min:0,max:200,step:5,fmt:function(v){return v+' tables'}},
+ {k:'bigGB',t:'range',l:'Size of each big table',min:1,max:20,step:1,fmt:function(v){return v+' GB'}},
+ {k:'nSmall',t:'range',l:'Other tables: small',min:0,max:400,step:10,fmt:function(v){return v+' tables'}},
+ {k:'smallMB',t:'range',l:'Size of each small table',min:1,max:200,step:1,fmt:function(v){return v+' MB'}},
+ {k:'hot',t:'range',l:'Hot key share of transactions',min:0,max:60,step:1,fmt:function(v){return v+'%'},hint:'One key (a NULL id, a bulk sender) holding this share of all rows.'},
+ {sec:'Compute'},
+ {k:'workers',t:'range',l:'Executors (workers)',min:1,max:64,step:1,fmt:function(v){return v},hint:'One executor per worker node.'},
+ {k:'cores',t:'seg',l:'Cores per executor',opts:[4,8,16,32]},
+ {k:'mem',t:'seg',l:'Memory per executor (GB)',opts:[16,32,64,128]},
+ {k:'pi',t:'range',l:'Shuffle partitions',min:0,max:PARTS.length-1,step:1,fmt:function(v){return PARTS[v]},hint:'Only used when the join is a shuffle join.'},
+ {sec:'Techniques'},
+ {k:'bc',t:'tgl',l:'Broadcast the price plan table'},
+ {k:'fix',t:'seg',l:'Skew fix for the shuffle join',opts:['none','aqe','salt'],names:{none:'None',aqe:'AQE skew join',salt:'Salting'}},
+ {k:'salt',t:'range',l:'Salt count',min:2,max:128,step:2,fmt:function(v){return v+' salts'},hint:'Only used when salting is selected.'},
+ {k:'opt',t:'tgl',l:'Optimized writes and compaction'},
+ {sec:'Your target'},
+ {k:'sla',t:'range',l:'Must finish within',min:1,max:240,step:1,fmt:function(v){return v+' min'}},
+ {k:'price',t:'range',l:'Cost per executor-hour',min:0.5,max:10,step:0.5,fmt:function(v){return '$'+v.toFixed(2)}}
+];
+
+var S=Object.assign({},DEF), preset='healthy', baseline=null;
+var sim=null, play={p:0,playing:false,last:0}, DURATION=12;
+var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------- controls ---------- */
+function buildRail(){
+  var h='';
+  CONTROLS.forEach(function(c){
+    if(c.sec){h+='<h2>'+c.sec+'</h2>';return;}
+    if(c.t==='range'){
+      h+='<div class="ctl"><label for="c-'+c.k+'">'+c.l+'</label><output id="o-'+c.k+'" for="c-'+c.k+'"></output>'+
+      '<input type="range" id="c-'+c.k+'" min="'+c.min+'" max="'+c.max+'" step="'+c.step+'">'+(c.hint?'<div class="hint">'+c.hint+'</div>':'')+'</div>';
+    } else if(c.t==='seg'){
+      h+='<div class="ctl" role="radiogroup" aria-label="'+c.l+'"><span class="lab">'+c.l+'</span><span></span><div class="seg">';
+      c.opts.forEach(function(o){
+        h+='<label><input type="radio" name="c-'+c.k+'" value="'+o+'"><span>'+(c.names?c.names[o]:o)+'</span></label>';
+      });
+      h+='</div></div>';
+    } else if(c.t==='tgl'){
+      h+='<label class="tgl"><span class="t">'+c.l+'</span><input type="checkbox" id="c-'+c.k+'"></label>';
+    }
+  });
+  h+='<div class="totals" id="totals"></div>';
+  $('#rail').innerHTML=h;
+  CONTROLS.forEach(function(c){
+    if(!c.k)return;
+    if(c.t==='range'){
+      $('#c-'+c.k).addEventListener('input',function(e){S[c.k]=parseFloat(e.target.value);userChanged();});
+    } else if(c.t==='seg'){
+      document.querySelectorAll('input[name="c-'+c.k+'"]').forEach(function(r){
+        r.addEventListener('change',function(e){var v=e.target.value;S[c.k]=isNaN(+v)?v:+v;userChanged();});
+      });
+    } else {
+      $('#c-'+c.k).addEventListener('change',function(e){S[c.k]=e.target.checked;userChanged();});
+    }
+  });
+}
+function syncControls(){
+  CONTROLS.forEach(function(c){
+    if(!c.k)return;
+    if(c.t==='range'){
+      $('#c-'+c.k).value=S[c.k];
+      $('#o-'+c.k).textContent=c.fmt(S[c.k]);
+    } else if(c.t==='seg'){
+      document.querySelectorAll('input[name="c-'+c.k+'"]').forEach(function(r){r.checked=(String(r.value)===String(S[c.k]));});
+    } else {
+      $('#c-'+c.k).checked=!!S[c.k];
+    }
+  });
+  $('#totals').textContent='Tables: 1 transaction + 1 price plan + '+(S.nBig+S.nSmall)+' others ('+S.nBig+' big, '+S.nSmall+' small)';
+}
+function buildPresets(){
+  var h='';
+  PRESETS.forEach(function(p){h+='<button class="chip" type="button" data-p="'+p.id+'" aria-pressed="false">'+p.name+'</button>';});
+  h+='<button class="chip ghost" type="button" data-p="custom" aria-pressed="false">Custom</button>';
+  $('#presets').innerHTML=h;
+  $('#presets').addEventListener('click',function(e){
+    var b=e.target.closest('button[data-p]');if(!b)return;
+    var id=b.getAttribute('data-p');if(id==='custom')return;
+    var p=PRESETS.filter(function(x){return x.id===id})[0];
+    S=Object.assign({},DEF,p.set);preset=id;refresh(true);
+  });
+}
+function markPresets(){
+  document.querySelectorAll('#presets .chip').forEach(function(b){
+    var id=b.getAttribute('data-p');
+    b.setAttribute('aria-pressed',String(id===(preset||'custom')));
+  });
+}
+function userChanged(){preset=null;refresh(true);}
+
+/* ---------- simulation ---------- */
+function splitSizes(mb){var out=[],left=mb;while(left>0.0001){var c=Math.min(K.split,left);out.push(c);left-=c;}return out;}
+function heapPush(h,t,c){h.push([t,c]);var i=h.length-1;while(i>0){var p=(i-1)>>1;if(h[p][0]<=h[i][0])break;var x=h[p];h[p]=h[i];h[i]=x;i=p;}}
+function heapPop(h){var top=h[0],last=h.pop();if(h.length){h[0]=last;var i=0,n=h.length;for(;;){var l=2*i+1,r=l+1,m=i;if(l<n&&h[l][0]<h[m][0])m=l;if(r<n&&h[r][0]<h[m][0])m=r;if(m===i)break;var x=h[m];h[m]=h[i];h[i]=x;i=m;}}return top;}
+
+function simulate(s){
+  var cores=s.workers*s.cores;
+  var poolMB=s.mem*1000*K.pool, share=poolMB/s.cores;
+  var txnMB=s.recM*s.bytes;
+  var P=PARTS[s.pi];
+  var bcOK=s.bc&&s.pp<=K.bcLimit;
+  var hotFrac=s.hot/100;
+  function mk(mb,rate,exp,hot){
+    var need=mb*exp, sf=Math.max(0,1-share/need);
+    return {mb:mb,need:need,sf:sf,dur:K.ovh+mb/rate*(1+2*sf),kind:hot?'hot':(sf>0.05?'spill':'normal'),oom:need>poolMB,hotTask:!!hot};
+  }
+  var t1=[],shuffleMB=0,bcMB=0,note='';
+  if(bcOK){
+    splitSizes(txnMB).forEach(function(mb){t1.push(mk(mb,K.rate1,K.exp1,false));});
+    shuffleMB=txnMB*0.05; bcMB=s.pp*s.workers;
+  } else {
+    var even=txnMB*(1-hotFrac)/P, hotMB=txnMB*hotFrac;
+    var hotAt=Math.floor(P*0.4);
+    for(var i=0;i<P;i++){
+      if(i===hotAt&&hotFrac>0){
+        var big=hotMB+even;
+        if(s.fix==='aqe'&&hotMB>K.aqeThresh){
+          var k=Math.min(Math.ceil(hotMB/K.aqeThresh),400);
+          for(var j=0;j<k;j++)t1.push(mk(big/k,K.rate1,K.exp1,false));
+          shuffleMB+=0;
+        } else if(s.fix==='salt'){
+          for(var j2=0;j2<s.salt;j2++)t1.push(mk(big/s.salt,K.rate1,K.exp1,false));
+          shuffleMB+=s.pp*(s.salt-1);
+        } else {
+          t1.push(mk(big,K.rate1,K.exp1,true));
+        }
+      } else t1.push(mk(even,K.rate1,K.exp1,false));
+    }
+    shuffleMB+=txnMB+s.pp;
+  }
+  var t2=[];
+  for(var b=0;b<s.nBig;b++)splitSizes(s.bigGB*1000).forEach(function(mb){t2.push(mk(mb,K.rate2,K.exp2,false));});
+  for(var m=0;m<s.nSmall;m++)splitSizes(s.smallMB).forEach(function(mb){t2.push(mk(mb,K.rate2,K.exp2,false));});
+
+  var coreIv=[];for(var c=0;c<cores;c++)coreIv.push([]);
+  function schedule(tasks,start){
+    var h=[];for(var c2=0;c2<cores;c2++)heapPush(h,start,c2);
+    var end=start;
+    for(var q=0;q<tasks.length;q++){
+      var top=heapPop(h),t=tasks[q];
+      t.start=top[0];t.end=top[0]+t.dur;t.core=top[1];
+      coreIv[top[1]].push([t.start,t.end,t.kind]);
+      heapPush(h,t.end,top[1]);if(t.end>end)end=t.end;
+    }
+    return end;
+  }
+  var netTime=shuffleMB/(s.workers*K.net);
+  var s1End=schedule(t1,netTime);
+  var T=schedule(t2,s1End);
+  if(!t1.length&&!t2.length)T=1;
+  var busy=0,spillN=0,oomN=0,all=t1.concat(t2);
+  all.forEach(function(t){busy+=t.dur;if(t.sf>0.05)spillN++;if(t.oom)oomN++;});
+  var durs=t1.map(function(t){return t.dur}).sort(function(a,b){return a-b});
+  var needs=t1.map(function(t){return t.need}).sort(function(a,b){return a-b});
+  var med=durs.length?durs[durs.length>>1]:0, mx=durs.length?durs[durs.length-1]:0;
+  var othersMB=s.nBig*s.bigGB*1000+s.nSmall*s.smallMB;
+  var outMB=txnMB*K.out1+othersMB*K.out2;
+  var files=s.opt?Math.max(1+s.nBig+s.nSmall,Math.ceil(outMB/K.fileTarget)):all.length;
+  return {cores:cores,share:share,poolMB:poolMB,txnMB:txnMB,P:P,bcOK:bcOK,t1:t1,t2:t2,coreIv:coreIv,
+    netTime:netTime,s1End:s1End,T:T,busy:busy,util:T>0?busy/(cores*T):0,spillPct:all.length?spillN/all.length:0,spillN:spillN,oomN:oomN,
+    med:med,mx:mx,medNeed:needs.length?needs[needs.length>>1]:0,maxNeed:needs.length?needs[needs.length-1]:0,
+    movedMB:shuffleMB+bcMB,files:files,avgFile:files?outMB/files:0,outMB:outMB,tasks:all.length,
+    cost:s.workers*(T/3600)*s.price,hotTask:t1.filter(function(t){return t.hotTask})[0]||null};
+}
+
+/* ---------- formatting ---------- */
+function fmtT(sec){if(sec<90)return sec.toFixed(sec<10?1:0)+' s';if(sec<5400)return (sec/60).toFixed(1)+' min';return (sec/3600).toFixed(1)+' h';}
+function fmtClock(sec){var m=Math.floor(sec/60),s=Math.floor(sec%60);return m+':'+(s<10?'0':'')+s;}
+function fmtMB(mb){if(mb>=1e6)return (mb/1e6).toFixed(1)+' TB';if(mb>=1000)return (mb/1000).toFixed(mb>=10000?0:1)+' GB';return Math.round(mb)+' MB';}
+function fmtInt(n){return Math.round(n).toLocaleString('en-US');}
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+
+/* ---------- cards ---------- */
+function delta(cur,base,lowerBetter){
+  if(!baseline)return '';
+  var d=(cur-base)/(Math.abs(base)||1)*100;
+  if(Math.abs(d)<0.5)return '<span class="d same">same as baseline</span>';
+  var better=lowerBetter?d<0:d>0;
+  return '<span class="d '+(better?'better':'worse')+'">'+(d>0?'+':'')+d.toFixed(Math.abs(d)<10?1:0)+'% vs baseline</span>';
+}
+function renderCards(){
+  var r=sim,over=r.T>S.sla*60;
+  var cards=[
+    {k:'Total time',v:fmtT(r.T),s:'Target '+S.sla+' min: '+(over?'missed':'met'),cls:over?'bad':'good',d:delta(r.T,baseline&&baseline.T,true)},
+    {k:'Slowest task, big stage',v:fmtT(r.mx),s:r.med>0?(r.mx/r.med).toFixed(1)+'x the median task':'',cls:(r.mx>8*r.med&&r.mx>30)?'bad':'',d:delta(r.mx,baseline&&baseline.mx,true)},
+    {k:'Core utilisation',v:Math.round(r.util*100)+'%',s:'Average over the run',cls:r.util<0.5?'bad':'',d:delta(r.util,baseline&&baseline.util,false)},
+    {k:'Tasks spilling',v:(r.spillPct>0&&r.spillPct<0.01?'<1%':Math.round(r.spillPct*100)+'%'),s:fmtInt(r.spillN)+' of '+fmtInt(r.tasks)+' tasks',cls:r.spillPct>0.05?'bad':'',d:delta(r.spillPct,baseline&&baseline.spillPct,true)},
+    {k:'Data moved on network',v:fmtMB(r.movedMB),s:r.bcOK?'Broadcast, no big shuffle':'Shuffle join',cls:'',d:delta(r.movedMB,baseline&&baseline.movedMB,true)},
+    {k:'Files written',v:fmtInt(r.files),s:'Average '+fmtMB(r.avgFile),cls:r.avgFile<32?'bad':'',d:delta(r.files,baseline&&baseline.files,true)},
+    {k:'Cost of this run',v:'$'+r.cost.toFixed(r.cost<10?2:0),s:S.workers+' executors x '+fmtT(r.T),cls:'',d:delta(r.cost,baseline&&baseline.cost,true)}
+  ];
+  $('#cards').innerHTML=cards.map(function(c){
+    return '<div class="card '+c.cls+'"><div class="k">'+c.k+'</div><div class="v">'+c.v+'</div><div class="s">'+c.s+'</div>'+(c.d?'<div>'+c.d+'</div>':'')+'</div>';
+  }).join('');
+}
+
+/* ---------- cluster canvas ---------- */
+var cl={cx:null,cy:null,s:10,W:0,H:0,blocks:[]};
+function sizeCanvas(cv,w,h){var dpr=Math.min(window.devicePixelRatio||1,2);cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);cv.style.height=h+'px';var x=cv.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);return x;}
+function layoutCluster(){
+  var cv=$('#clusterCv'),W=cv.parentElement.clientWidth-32;if(W<100)W=300;
+  var n=S.workers,c=S.cores,k=c<=4?c:(c<=8?4:8),rows=Math.ceil(c/k),bg=8,pad=4,Hmax=360,best=null;
+  for(var s=26;s>=3;s--){
+    var g=s>=8?2:1,hdr=s>=12?13:0;
+    var bw=k*s+(k-1)*g+pad*2,bh=rows*s+(rows-1)*g+pad*2+hdr;
+    var cols=Math.max(1,Math.floor((W+bg)/(bw+bg))),rws=Math.ceil(n/cols);cols=Math.ceil(n/rws);var th=rws*(bh+bg)-bg;
+    best={s:s,g:g,hdr:hdr,bw:bw,bh:bh,cols:cols,th:th};
+    if(th<=Hmax)break;
+  }
+  var b=best;cl.s=b.s;cl.g=b.g;cl.hdr=b.hdr;cl.bw=b.bw;cl.bh=b.bh;cl.pad=pad;cl.k=k;cl.W=W;cl.H=b.th+2;
+  cl.cx=new Float32Array(sim.cores);cl.cy=new Float32Array(sim.cores);cl.bl=[];
+  var usedCols=Math.min(b.cols,n),total=usedCols*(b.bw+bg)-bg,ox=Math.max(0,(W-total)/2);
+  for(var w=0;w<n;w++){
+    var col=w%b.cols,row=Math.floor(w/b.cols),x0=ox+col*(b.bw+bg),y0=row*(b.bh+bg);
+    cl.bl.push([x0,y0]);
+    for(var j=0;j<c;j++){
+      cl.cx[w*c+j]=x0+pad+(j%k)*(b.s+b.g);
+      cl.cy[w*c+j]=y0+pad+b.hdr+Math.floor(j/k)*(b.s+b.g);
+    }
+  }
+  cl.ctx=sizeCanvas(cv,W,cl.H);
+}
+function stateAt(iv,t){
+  var lo=0,hi=iv.length-1,ans=-1;
+  while(lo<=hi){var m=(lo+hi)>>1;if(iv[m][0]<=t){ans=m;lo=m+1;}else hi=m-1;}
+  if(ans>=0&&t<iv[ans][1])return iv[ans][2];
+  return null;
+}
+function drawCluster(t){
+  var x=cl.ctx;x.clearRect(0,0,cl.W,cl.H);
+  var wc=css('--worker'),cols={normal:css('--busy'),spill:css('--spill'),hot:css('--hot')},idle=css('--idle'),mut=css('--muted');
+  var c=S.cores,s=cl.s;
+  x.font='600 10px '+css('--mono');x.textBaseline='top';
+  for(var w=0;w<S.workers;w++){
+    var b=cl.bl[w];x.fillStyle=wc;
+    x.beginPath();if(x.roundRect)x.roundRect(b[0],b[1],cl.bw,cl.bh,5);else x.rect(b[0],b[1],cl.bw,cl.bh);x.fill();
+    if(cl.hdr){x.fillStyle=mut;x.fillText('W'+(w+1),b[0]+cl.pad+1,b[1]+3);}
+    for(var j=0;j<c;j++){
+      var idx=w*c+j,st=stateAt(sim.coreIv[idx],t);
+      x.fillStyle=st?cols[st]:idle;
+      x.fillRect(cl.cx[idx],cl.cy[idx],s,s);
+    }
+  }
+}
+
+/* ---------- utilisation chart ---------- */
+function utilSeries(bins){
+  var T=sim.T,bd=T/bins,a={normal:new Float64Array(bins),spill:new Float64Array(bins),hot:new Float64Array(bins)};
+  function add(t){
+    var i0=Math.floor(t.start/bd),i1=Math.min(bins-1,Math.floor((t.end-1e-9)/bd));
+    for(var i=i0;i<=i1;i++){var lo=Math.max(t.start,i*bd),hi=Math.min(t.end,(i+1)*bd);if(hi>lo)a[t.kind][i]+=(hi-lo);}
+  }
+  sim.t1.forEach(add);sim.t2.forEach(add);
+  for(var k in a)for(var i=0;i<bins;i++)a[k][i]=a[k][i]/(bd*sim.cores);
+  return a;
+}
+function drawUtil(p){
+  var cv=$('#utilCv'),W=cv.parentElement.clientWidth-32,H=210;if(W<100)W=300;
+  var x=sizeCanvas(cv,W,H),L=38,R=8,Tp=8,B=26,iw=W-L-R,ih=H-Tp-B,bins=Math.max(40,Math.min(160,Math.floor(iw/3)));
+  var ser=utilSeries(bins),mut=css('--muted'),line=css('--line');
+  x.font='11px '+css('--mono');x.fillStyle=mut;x.strokeStyle=line;x.lineWidth=1;
+  [0,0.5,1].forEach(function(f){var y=Tp+ih*(1-f);x.beginPath();x.moveTo(L,y);x.lineTo(W-R,y);x.stroke();x.textAlign='right';x.textBaseline='middle';x.fillText(Math.round(f*100)+'%',L-6,y);});
+  var order=['normal','spill','hot'],colr={normal:css('--busy'),spill:css('--spill'),hot:css('--hot')},base=new Float64Array(bins);
+  order.forEach(function(k){
+    x.fillStyle=colr[k];x.beginPath();
+    for(var i=0;i<bins;i++){var xx=L+iw*i/bins,y=Tp+ih*(1-Math.min(1,base[i]+ser[k][i]));if(i===0)x.moveTo(xx,Tp+ih*(1-Math.min(1,base[i])));x.lineTo(xx,y);x.lineTo(L+iw*(i+1)/bins,y);}
+    for(var j=bins-1;j>=0;j--){var y2=Tp+ih*(1-Math.min(1,base[j]));x.lineTo(L+iw*(j+1)/bins,y2);x.lineTo(L+iw*j/bins,y2);}
+    x.closePath();x.fill();
+    for(var m=0;m<bins;m++)base[m]+=ser[k][m];
+  });
+  x.fillStyle=mut;x.textBaseline='top';x.textAlign='center';
+  for(var q=0;q<=4;q++){var tt=sim.T*q/4;x.textAlign=q===0?'left':(q===4?'right':'center');x.fillText(fmtT(tt),L+iw*q/4,H-B+7);}
+  if(sim.s1End>0&&sim.s1End<sim.T-1){
+    var sx=L+iw*sim.s1End/sim.T;x.setLineDash([4,3]);x.strokeStyle=mut;x.beginPath();x.moveTo(sx,Tp);x.lineTo(sx,Tp+ih);x.stroke();x.setLineDash([]);
+    x.fillStyle=mut;x.textBaseline='top';if(sx>W-70){x.textAlign='right';x.fillText('stage 2',sx-4,Tp+2);}else{x.textAlign='left';x.fillText('stage 2',sx+4,Tp+2);}
+  }
+  var px=L+iw*p;x.strokeStyle=css('--fg');x.lineWidth=1.5;x.beginPath();x.moveTo(px,Tp);x.lineTo(px,Tp+ih);x.stroke();
+}
+
+/* ---------- task chart ---------- */
+function drawTasks(){
+  var cv=$('#taskCv'),W=cv.parentElement.clientWidth-32,H=210;if(W<100)W=300;
+  var x=sizeCanvas(cv,W,H),L=8,R=8,Tp=18,B=26,iw=W-L-R,ih=H-Tp-B;
+  var t1=sim.t1,n=t1.length,mx=sim.mx||1,mut=css('--muted'),line=css('--line');
+  var cnt=Math.min(n,Math.floor(iw/3)),pick=[],mi=0;
+  for(var i=0;i<n;i++)if(t1[i].dur>t1[mi].dur)mi=i;
+  for(var j=0;j<cnt;j++)pick.push(Math.floor(j*n/cnt));
+  if(pick.indexOf(mi)<0&&cnt>0)pick[Math.floor(cnt*mi/n)]=mi;
+  var bw=Math.max(1,iw/cnt-1),cols={normal:css('--busy'),spill:css('--spill'),hot:css('--hot')};
+  x.strokeStyle=line;x.lineWidth=1;x.beginPath();x.moveTo(L,Tp+ih);x.lineTo(W-R,Tp+ih);x.stroke();
+  pick.forEach(function(ix,j){
+    var t=t1[ix],h=Math.max(2,ih*t.dur/mx);x.fillStyle=cols[t.kind];x.fillRect(L+j*(iw/cnt),Tp+ih-h,bw,h);
+  });
+  var my=Tp+ih-Math.max(1,ih*sim.med/mx);
+  x.setLineDash([4,3]);x.strokeStyle=css('--fg');x.beginPath();x.moveTo(L,my);x.lineTo(W-R,my);x.stroke();x.setLineDash([]);
+  x.font='11px '+css('--mono');x.fillStyle=mut;x.textBaseline='bottom';x.textAlign='left';
+  x.fillText('max '+fmtT(sim.mx),L,Tp-4);
+  x.textAlign='right';x.fillText('median '+fmtT(sim.med)+' (dashed)',W-R,Tp-4);
+  x.textAlign='center';x.textBaseline='top';x.fillStyle=mut;x.fillText('each bar is one task, in launch order ('+fmtInt(n)+' tasks)',W/2,Tp+ih+8);
+}
+
+/* ---------- memory ---------- */
+function renderMem(){
+  var r=sim,mxv=Math.max(r.share*1.6,Math.min(r.maxNeed,r.share*6));
+  function pct(v){return Math.min(100,v/mxv*100);}
+  function row(label,val,color,over){
+    return '<div>'+label+'</div><div class="bar"><b style="width:'+pct(val)+'%;background:'+color+'"></b><u style="left:'+pct(r.share)+'%"></u></div><div class="val">'+fmtMB(val)+(over?' ('+(val/r.share).toFixed(1)+'x the share)':'')+'</div>';
+  }
+  $('#mem').innerHTML=
+    row('Share per task',r.share,'var(--busy)',false)+
+    row('Typical task needs',r.medNeed,r.medNeed>r.share?'var(--spill)':'var(--busy)',r.medNeed>r.share)+
+    row('Largest task needs',r.maxNeed,r.maxNeed>r.share?(r.maxNeed>r.poolMB?'var(--hot)':'var(--spill)'):'var(--busy)',r.maxNeed>r.share);
+  $('#memMeta').textContent='Dashed line = share per task (pool '+fmtMB(r.poolMB)+' / '+S.cores+' cores)';
+}
+
+/* ---------- diagnosis ---------- */
+function nextMem(){var o=[16,32,64,128],i=o.indexOf(S.mem);return o[Math.min(o.length-1,i+1)];}
+function diagnose(){
+  var r=sim,m=[],sla=S.sla*60,over=r.T>sla;
+  var skewed=!r.bcOK&&S.hot>0&&S.fix==='none';
+  var hotDom=r.hotTask&&r.hotTask.dur>0.5*r.T;
+  if(S.bc&&S.pp>K.bcLimit)m.push({sev:'info',t:'The price plan is too big to broadcast',b:'At '+S.pp+' MB it would be copied to all '+S.workers+' executors and held in the driver, so Spark falls back to a shuffle join. Broadcast works for lookup tables, roughly under 1 GB.',a:[{l:'Shrink it to 200 MB',f:function(){S.pp=200}}]});
+  if(r.oomN>0)m.push({sev:'bad',t:'Likely out-of-memory crash',b:fmtInt(r.oomN)+' task(s) need more memory ('+fmtMB(r.maxNeed)+') than the whole execution pool of one executor ('+fmtMB(r.poolMB)+'). In real life the executor dies and Spark retries, and the job often fails. Make the biggest task smaller before anything else.',a:[]});
+  if(skewed)m.push({sev:'bad',t:'Data skew: one task holds '+fmtMB(r.hotTask?r.hotTask.mb:0),b:'One key holds '+S.hot+'% of the rows, so one partition is far bigger than the rest. Every other core finishes and waits for this task. Adding executors will not help.',a:[
+    {l:'Turn on AQE skew join',f:function(){S.fix='aqe'}},
+    {l:'Salt it',f:function(){S.fix='salt';S.salt=Math.max(S.salt,Math.min(128,Math.ceil(S.recM*S.bytes*S.hot/100/K.aqeThresh/2)*2))}}].concat(S.pp<=K.bcLimit?[{l:'Broadcast the price plan',f:function(){S.bc=true}}]:[])});
+  if(!r.bcOK&&S.hot>0&&S.fix==='salt'&&r.spillPct>0.01&&!skewed)m.push({sev:'warn',t:'Too few salts',b:'Each salted piece still needs more memory than its share, so it spills. Raise the salt count so each piece is a few hundred MB.',a:[{l:'Double the salts',f:function(){S.salt=Math.min(128,S.salt*2)}}]});
+  if(r.spillPct>0.05&&!skewed&&r.oomN===0){
+    var acts=[];if(!r.bcOK&&S.pi<PARTS.length-1)acts.push({l:'More shuffle partitions',f:function(){S.pi=Math.min(PARTS.length-1,S.pi+2)}});
+    if(S.mem<128)acts.push({l:'Memory per executor x2',f:function(){S.mem=nextMem()}});
+    m.push({sev:'warn',t:fmtInt(r.spillN)+' tasks spill to disk',b:'A typical task needs '+fmtMB(r.medNeed)+' but its share is '+fmtMB(r.share)+'. Spilled tasks run up to 3x slower. Make each task smaller (more partitions) or give each core more memory.',a:acts});
+  }
+  if(r.t1.length<r.cores&&r.t1.length>0&&!hotDom)m.push({sev:'warn',t:'Idle cores in the big stage',b:'Only '+fmtInt(r.t1.length)+' tasks for '+fmtInt(r.cores)+' cores, so '+fmtInt(r.cores-r.t1.length)+' cores have nothing to do. Use more partitions, or fewer executors.',a:!r.bcOK?[{l:'More shuffle partitions',f:function(){S.pi=Math.min(PARTS.length-1,S.pi+2)}}]:[]});
+  if(r.avgFile<32)m.push({sev:'warn',t:'Tiny files: average '+fmtMB(r.avgFile),b:'Every task writes its own file, and there are '+fmtInt(r.files)+' of them. Readers will spend more time opening files than reading data.',a:S.opt?[]:[{l:'Turn on optimized writes',f:function(){S.opt=true}}]});
+  if(!r.bcOK&&S.pp<=K.bcLimit&&!S.bc&&S.hot===0)m.push({sev:'info',t:'You are shuffling '+fmtMB(r.txnMB)+' for a '+S.pp+' MB table',b:'The price plan table is small enough to broadcast. That removes the shuffle of the transaction table completely.',a:[{l:'Broadcast the price plan',f:function(){S.bc=true}}]});
+  if(over){
+    if(hotDom||skewed)m.push({sev:'bad',t:'Missed the '+S.sla+' min target by '+fmtT(r.T-sla),b:'One task alone runs for '+fmtT(r.hotTask?r.hotTask.dur:r.mx)+'. More executors would not shorten it, so fix the skew first.',a:[]});
+    else{
+      var need=Math.min(64,Math.ceil(S.workers*r.T/sla*1.1));
+      m.push({sev:'bad',t:'Missed the '+S.sla+' min target by '+fmtT(r.T-sla),b:(r.util>0.7?'The cluster is busy the whole run, so it simply needs more compute. ':'Cores are often idle, so look at the other warnings before adding compute. ')+'A rough estimate is '+need+' executors.',a:need>S.workers&&S.workers<64?[{l:'Set executors to '+need,f:function(){S.workers=need}}]:[]});
+    }
+  }
+  if(!over&&r.T<sla*0.5&&S.workers>1&&r.oomN===0&&!skewed){
+    var fewer=Math.max(1,Math.ceil(S.workers*r.T/(sla*0.8)));
+    if(fewer<S.workers)m.push({sev:'info',t:'You have room to spare',b:'The run finishes in '+fmtT(r.T)+' against a '+S.sla+' min target. About '+fewer+' executors would still make it and cost less.',a:[{l:'Try '+fewer+' executors',f:function(){S.workers=fewer}}]});
+  }
+  if(!m.some(function(x){return x.sev==='bad'||x.sev==='warn'}))m.unshift({sev:'good',t:'Healthy run',b:'Finishes in '+fmtT(r.T)+' within the '+S.sla+' min target, with '+Math.round(r.util*100)+'% core utilisation and no spill. Now break it on purpose: pick another scenario, or drag executors down.',a:[]});
+  return m;
+}
+var actionMap=[];
+function renderDiag(){
+  var ms=diagnose();actionMap=[];
+  $('#diag').innerHTML=ms.map(function(x){
+    var acts=x.a.map(function(a){actionMap.push(a.f);return '<button type="button" data-a="'+(actionMap.length-1)+'">'+a.l+'</button>';}).join('');
+    return '<div class="msg '+x.sev+'"><h4>'+x.t+'</h4><p>'+x.b+'</p>'+(acts?'<div class="acts">'+acts+'</div>':'')+'</div>';
+  }).join('');
+}
+
+/* ---------- playback ---------- */
+function drawAll(){
+  var t=play.p*sim.T;drawCluster(t);drawUtil(play.p);
+  $('#clock').textContent=fmtClock(t)+' / '+fmtClock(sim.T);
+  $('#scrub').value=Math.round(play.p*1000);
+}
+function frame(ts){
+  if(!play.playing)return;
+  var dt=(ts-play.last)/1000;play.last=ts;
+  var speed=parseFloat($('#speed').value)||1;
+  play.p=Math.min(1,play.p+dt*speed/DURATION);drawAll();
+  if(play.p>=1){play.playing=false;$('#playBtn').textContent='Replay';}else requestAnimationFrame(frame);
+}
+function startPlay(fromStart){
+  if(fromStart)play.p=0;
+  if(play.p>=1)play.p=0;
+  play.playing=true;play.last=performance.now();$('#playBtn').textContent='Pause';requestAnimationFrame(frame);
+}
+function stopPlay(){play.playing=false;$('#playBtn').textContent=play.p>=1?'Replay':'Play';}
+
+/* ---------- main ---------- */
+function refresh(autoplay){
+  sim=simulate(S);
+  syncControls();markPresets();renderCards();renderMem();renderDiag();
+  $('#clusterMeta').textContent=S.workers+' executors x '+S.cores+' cores = '+fmtInt(sim.cores)+' cores, '+S.mem+' GB each';
+  $('#utilMeta').textContent=Math.round(sim.util*100)+'% average';
+  $('#taskMeta').textContent=fmtInt(sim.t1.length)+' tasks';
+  layoutCluster();drawTasks();
+  if(autoplay&&!reduced){play.p=0;drawAll();startPlay(true);}
+  else{play.p=0.5;stopPlay();drawAll();}
+}
+var rz;window.addEventListener('resize',function(){clearTimeout(rz);rz=setTimeout(function(){if(!sim)return;layoutCluster();drawTasks();drawAll();},120);});
+if(window.matchMedia){var mq=window.matchMedia('(prefers-color-scheme: dark)');var rd=function(){if(sim){drawTasks();drawAll();}};if(mq.addEventListener)mq.addEventListener('change',rd);}
+new MutationObserver(function(){if(sim){drawTasks();drawAll();}}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+buildRail();buildPresets();
+$('#playBtn').addEventListener('click',function(){if(play.playing)stopPlay();else startPlay(false);});
+$('#scrub').addEventListener('input',function(e){play.playing=false;play.p=e.target.value/1000;$('#playBtn').textContent='Play';drawAll();});
+$('#diag').addEventListener('click',function(e){
+  var b=e.target.closest('button[data-a]');if(!b)return;
+  actionMap[+b.getAttribute('data-a')]();preset=null;refresh(true);
+});
+$('#pinBtn').addEventListener('click',function(){
+  if(baseline){baseline=null;this.textContent='Pin as baseline';}
+  else{baseline={T:sim.T,mx:sim.mx,util:sim.util,spillPct:sim.spillPct,movedMB:sim.movedMB,files:sim.files,cost:sim.cost};this.textContent='Clear baseline';}
+  renderCards();
+});
+refresh(true);
+})();
+</script>
+</body>
+</html>
