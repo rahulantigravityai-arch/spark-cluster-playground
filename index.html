@@ -214,7 +214,7 @@ var CONTROLS=[
  {k:'workers',t:'range',l:'Executors (workers)',min:1,max:64,step:1,fmt:function(v){return v},hint:'One executor per worker node.'},
  {k:'cores',t:'seg',l:'Cores per executor',opts:[4,8,16,32]},
  {k:'mem',t:'seg',l:'Memory per executor (GB)',opts:[16,32,64,128]},
- {k:'pi',t:'range',l:'Shuffle partitions',min:0,max:PARTS.length-1,step:1,fmt:function(v){return PARTS[v]},hint:'Only used when the join is a shuffle join.'},
+ {k:'pi',t:'range',l:'Shuffle partitions',min:0,max:PARTS.length-1,step:1,fmt:function(v){return PARTS[v]},hint:'No effect while the price plan is broadcast: there is no shuffle join to split. Turn broadcast off to see it matter.'},
  {sec:'Techniques'},
  {k:'bc',t:'tgl',l:'Broadcast the price plan table'},
  {k:'fix',t:'seg',l:'Skew fix for the shuffle join',opts:['none','aqe','salt'],names:{none:'None',aqe:'AQE skew join',salt:'Salting'}},
@@ -222,7 +222,7 @@ var CONTROLS=[
  {k:'opt',t:'tgl',l:'Optimized writes and compaction'},
  {sec:'Your target'},
  {k:'sla',t:'range',l:'Must finish within',min:1,max:240,step:1,fmt:function(v){return v+' min'}},
- {k:'price',t:'range',l:'Cost per executor-hour',min:0.5,max:10,step:0.5,fmt:function(v){return '$'+v.toFixed(2)}}
+ {k:'price',t:'range',l:'Cost per 8-core executor-hour',hint:'Scaled by cores, so a 32-core executor costs 4x as much.',min:0.5,max:10,step:0.5,fmt:function(v){return '$'+v.toFixed(2)}}
 ];
 
 var S=Object.assign({},DEF), preset='healthy', baseline=null;
@@ -368,7 +368,7 @@ function simulate(s){
     netTime:netTime,s1End:s1End,T:T,busy:busy,util:T>0?busy/(cores*T):0,spillPct:all.length?spillN/all.length:0,spillN:spillN,oomN:oomN,
     med:med,mx:mx,medNeed:needs.length?needs[needs.length>>1]:0,maxNeed:needs.length?needs[needs.length-1]:0,
     movedMB:shuffleMB+bcMB,files:files,avgFile:files?outMB/files:0,outMB:outMB,tasks:all.length,
-    cost:s.workers*(T/3600)*s.price,hotTask:t1.filter(function(t){return t.hotTask})[0]||null};
+    cost:s.workers*(s.cores/8)*(T/3600)*s.price,hotTask:t1.filter(function(t){return t.hotTask})[0]||null};
 }
 
 /* ---------- formatting ---------- */
@@ -395,7 +395,7 @@ function renderCards(){
     {k:'Tasks spilling',v:(r.spillPct>0&&r.spillPct<0.01?'<1%':Math.round(r.spillPct*100)+'%'),s:fmtInt(r.spillN)+' of '+fmtInt(r.tasks)+' tasks',cls:r.spillPct>0.05?'bad':'',d:delta(r.spillPct,baseline&&baseline.spillPct,true)},
     {k:'Data moved on network',v:fmtMB(r.movedMB),s:r.bcOK?'Broadcast, no big shuffle':'Shuffle join',cls:'',d:delta(r.movedMB,baseline&&baseline.movedMB,true)},
     {k:'Files written',v:fmtInt(r.files),s:'Average '+fmtMB(r.avgFile),cls:r.avgFile<32?'bad':'',d:delta(r.files,baseline&&baseline.files,true)},
-    {k:'Cost of this run',v:'$'+r.cost.toFixed(r.cost<10?2:0),s:S.workers+' executors x '+fmtT(r.T),cls:'',d:delta(r.cost,baseline&&baseline.cost,true)}
+    {k:'Cost of this run',v:'$'+r.cost.toFixed(r.cost<10?2:0),s:S.workers+' executors x '+S.cores+' cores x '+fmtT(r.T),cls:'',d:delta(r.cost,baseline&&baseline.cost,true)}
   ];
   $('#cards').innerHTML=cards.map(function(c){
     return '<div class="card '+c.cls+'"><div class="k">'+c.k+'</div><div class="v">'+c.v+'</div><div class="s">'+c.s+'</div>'+(c.d?'<div>'+c.d+'</div>':'')+'</div>';
