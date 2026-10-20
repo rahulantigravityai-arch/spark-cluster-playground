@@ -129,6 +129,18 @@ code{font-family:var(--mono);font-size:12.5px}
 body.demo-on .wrap{padding-bottom:230px}
 @media (min-width:1000px){.demo-bar{left:16px;transform:none;width:372px;bottom:16px}.demo-bar p{min-height:96px}body.demo-on .wrap{padding-bottom:24px}}
 @media (prefers-reduced-motion: reduce){.demo-prog i{transition:none}}
+
+/* ---------- info buttons ---------- */
+.ib{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:6px;padding:0;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--muted);font:italic 700 12px Georgia,"Times New Roman",serif;line-height:1;cursor:help;vertical-align:middle;flex:none;text-transform:none;letter-spacing:0}
+.ib:hover,.ib:focus-visible,.ib[aria-expanded="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent);outline:none}
+.ib:focus-visible{box-shadow:0 0 0 3px var(--accent-soft)}
+.info-pop{position:fixed;z-index:60;background:var(--surface);color:var(--fg);border:1px solid var(--accent);border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.28);padding:12px 14px;font-size:13.5px;line-height:1.45;font-weight:400;text-transform:none;letter-spacing:0}
+.info-pop b{display:block;font-size:14.5px;margin-bottom:4px}
+.info-pop p{margin:6px 0 0}
+.info-pop span{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);margin-right:4px}
+.card .k .ib{width:16px;height:16px;font-size:11px;margin-left:5px}
+.demo-row{display:flex;align-items:center;align-self:flex-start;margin-top:10px}
+.demo-row .demo-btn{margin-top:0}
 </style>
 </head>
 <body>
@@ -255,22 +267,94 @@ var S=Object.assign({},DEF), preset='healthy', baseline=null;
 var sim=null, play={p:0,playing:false,last:0}, DURATION=12;
 var reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+
+/* ---------- info (i) buttons: what each thing is and what it does ---------- */
+var INFO={
+ scen:{t:'Scenarios',w:'Ready-made situations that each load a full set of values.',d:'Shows a typical problem straight away: a healthy run, too few executors, a 3x festive peak, a hot key or too few partitions. Change anything afterwards and it becomes Custom.'},
+ demo:{t:'Auto demo',w:'A scripted tour of nine steps, about 75 seconds.',d:'Moves the controls for you and explains each result as it happens. You can pause, skip a step or exit at any time.'},
+ sec_data:{t:'Data',w:'The size and shape of the workload being processed.',d:'These settings decide how much data there is and how it is split into tasks.'},
+ sec_compute:{t:'Compute',w:'The cluster you give the job: executors, cores and memory.',d:'These settings decide how many tasks run at once and how much memory each one gets.'},
+ sec_tech:{t:'Techniques',w:'Optimisations you can switch on to fix problems.',d:'Try them after you see a problem in the diagnosis: broadcast, skew fixes and optimized writes.'},
+ sec_target:{t:'Your target',w:'Your deadline and your price.',d:'Used to judge each run: met or missed, and what it costs.'},
+ recM:{t:'Transaction records',w:'The number of rows in the big transaction table, such as the day of call records.',d:'The main driver of work. More rows means more data to scan and join, so more tasks and a longer run.'},
+ bytes:{t:'Record size',w:'The average size of one row, in bytes.',d:'With the record count it sets the table size (records x bytes). Wider rows mean more data to move and more memory per task.'},
+ pp:{t:'Price plan table',w:'A small lookup table that every transaction is joined to.',d:'If it is small enough (under about 1 GB) it can be broadcast to every executor, which avoids shuffling the big table. If it is too big, Spark falls back to a shuffle join.'},
+ nBig:{t:'Other tables: big',w:'How many additional large tables the job also processes in its second stage.',d:'Each one adds tasks, one per 128 MB chunk. More big tables means a longer second stage.'},
+ bigGB:{t:'Size of each big table',w:'The size of every big table, in GB.',d:'Sets how many 128 MB chunks, and so how many tasks, each big table creates.'},
+ nSmall:{t:'Other tables: small',w:'How many small tables the job processes.',d:'Each small table is usually one task. Lots of small tables means lots of tiny tasks and tiny output files.'},
+ smallMB:{t:'Size of each small table',w:'The size of every small table, in MB.',d:'Tables under 128 MB are one task each. This changes how long those tasks run and the size of the files they write.'},
+ hot:{t:'Hot key share of transactions',w:'The share of all rows that belong to one single key, such as a NULL id or a bulk sender.',d:'Creates data skew: one partition becomes huge and one task runs far longer than the rest (the red core). At 0% the data is evenly spread. It only matters when the join is a shuffle join.'},
+ workers:{t:'Executors (workers)',w:'How many executors, one per worker node, are in the cluster.',d:'More executors means more cores working in parallel, so a shorter run for evenly spread work. It cannot speed up a single slow task, and cost stays roughly flat until cores outnumber tasks.'},
+ cores:{t:'Cores per executor',w:'How many tasks one executor runs at the same time.',d:'Total cores = executors x cores per executor. Each core gets a share of the executor memory, so more cores means less memory per task. It also scales the cost.'},
+ mem:{t:'Memory per executor',w:'The memory of each executor, in GB.',d:'About 45% of it is shared by the running tasks. A task that needs more than its share spills to disk and runs up to 3x slower. Needing more than the whole pool is flagged as a likely out-of-memory failure.'},
+ pi:{t:'Shuffle partitions',w:'The number of chunks the data is split into when it is shuffled for a join.',d:'Too few gives huge tasks that spill. Too many gives tiny tasks with overhead. It is only used when the price plan is not broadcast.'},
+ bc:{t:'Broadcast the price plan table',w:'A technique that copies the small table to every executor.',d:'Removes the shuffle of the big table, usually the biggest single speed-up, and removes skew too. It only works if the table is under about 1 GB.'},
+ fix:{t:'Skew fix for the shuffle join',w:'How a shuffle join deals with the hot key.',d:'None: one task gets the whole hot key. AQE skew join: Spark splits the oversized partition at run time. Salting: the key is spread over several tasks with a random suffix. Only used in a shuffle join with a hot key.'},
+ salt:{t:'Salt count',w:'How many pieces the hot key is split into when salting.',d:'More salts means smaller hot tasks and a shorter run, with a little extra shuffle. A good start is the hot size divided by about 256 MB.'},
+ opt:{t:'Optimized writes and compaction',w:'A Delta Lake option that groups output into fewer, bigger files.',d:'Reduces the number of files written (aiming for 128 MB each), so later reads are faster. It does not change the run time much.'},
+ sla:{t:'Must finish within',w:'Your deadline for the job, in minutes.',d:'The Total time card and the diagnosis compare each run against it, say whether it is met or missed, and estimate how many executors would be enough.'},
+ price:{t:'Cost per 8-core executor-hour',w:'What one 8-core executor costs for one hour.',d:'Cost of a run = executors x (cores / 8) x hours x this price. Idle cores are still paid for. Enter your own rate.'},
+ total:{t:'Total time',w:'How long the whole job takes, from the start to the last task finishing.',d:'Compared with your deadline. One slow task can set it for the whole job. It is simulated, not measured on real hardware.'},
+ slow:{t:'Slowest task, big stage',w:'The longest task in the first (join) stage, and how it compares with the median task.',d:'A ratio far above 1x means skew: a few tasks hold up the stage while other cores wait.'},
+ util:{t:'Core utilisation',w:'The share of available core time spent actually working.',d:'High is efficient. Low means cores sit idle, from skew, too few tasks or waiting on one slow task, so more executors will not help.'},
+ spill:{t:'Tasks spilling',w:'The share of tasks that needed more memory than their share and wrote data to disk.',d:'Spilled tasks run up to 3x slower. Fix with more partitions (smaller tasks) or more memory per core.'},
+ net:{t:'Data moved on network',w:'How much data travels between executors to do the join.',d:'A shuffle join moves the big table (often hundreds of GB). A broadcast moves only the small table to each executor. Network movement is slow and costly.'},
+ files:{t:'Files written',w:'How many output files the job produces, and their average size.',d:'One file per task unless optimized writes is on. Many tiny files (under 32 MB) slow down later reads: the small files problem.'},
+ cost:{t:'Cost of this run',w:'The estimated bill for this one run.',d:'Executors x cores factor x time x your price. Pin a baseline to compare options.'},
+ cluster:{t:'The cluster, replayed',w:'Each block is an executor and each small square is a core.',d:'Shows what every core is doing as the run unfolds, so you can see idle cores, spilling tasks and the hot task. Press Replay to watch it again.'},
+ legend:{t:'Colour key',w:'What the colours mean.',d:'Busy: a core running a task. Spilling: a task writing to disk because memory is short. Hot task: the oversized task caused by skew. Idle: a core with nothing to do.'},
+ player:{t:'Replay controls',w:'Play or pause, drag through time, and change the speed of the replay.',d:'Drag the slider to jump to any moment of the run. It only changes what you see, never the results.'},
+ utilchart:{t:'Cores busy over time',w:'A chart of how many cores are busy at each moment.',d:'A tall flat top means the cluster is fully used. A long thin tail means most cores are idle waiting on a few slow tasks. The gap marks the move from stage 1 to stage 2.'},
+ taskchart:{t:'Task durations, big stage',w:'One bar per task in the big join stage, showing how long it ran.',d:'The dashed line is the median. A few much taller bars are skewed or spilling tasks that set the time for the whole stage.'},
+ memory:{t:'Memory per task',w:'Compares the memory a typical and the largest task need with the share each core gets.',d:'If a task needs more than its share it spills to disk. If it needs more than the whole pool it can run out of memory.'},
+ diag:{t:'What the cluster is telling you',w:'Plain-language findings about this run.',d:'Points out problems such as skew, spilling, idle cores, a missed target or wasted executors, and offers one-click fixes you can press.'},
+ pin:{t:'Pin as baseline',w:'Saves the current results as a reference.',d:'After you change something, each card shows the change against the baseline (for example -51%), so you can see the effect of one change. Press again to clear it.'}
+};
+var SECKEY={'Data':'sec_data','Compute':'sec_compute','Techniques':'sec_tech','Your target':'sec_target'};
+var CARDKEY={'Total time':'total','Slowest task, big stage':'slow','Core utilisation':'util','Tasks spilling':'spill','Data moved on network':'net','Files written':'files','Cost of this run':'cost'};
+function ib(key){var d=INFO[key];if(!d)return '';return '<button type="button" class="ib" data-i="'+key+'" aria-label="About: '+d.t+'" aria-expanded="false">i</button>';}
+var pop=document.createElement('div');pop.className='info-pop';pop.id='infoPop';pop.setAttribute('role','tooltip');pop.hidden=true;document.body.appendChild(pop);
+var popBtn=null,popPinned=false;
+function hideInfo(){if(popBtn)popBtn.setAttribute('aria-expanded','false');popBtn=null;popPinned=false;pop.hidden=true;}
+function showInfo(btn,pin){
+  var d=INFO[btn.getAttribute('data-i')];if(!d)return;
+  if(popBtn&&popBtn!==btn)popBtn.setAttribute('aria-expanded','false');
+  pop.innerHTML='<b>'+d.t+'</b><p><span>What it is</span>'+d.w+'</p><p><span>What it does</span>'+d.d+'</p>';
+  pop.hidden=false;popBtn=btn;popPinned=!!pin;btn.setAttribute('aria-expanded','true');
+  var pw=Math.min(330,innerWidth-24);pop.style.width=pw+'px';
+  var r=btn.getBoundingClientRect(),ph=pop.offsetHeight;
+  var left=Math.max(12,Math.min(r.left+r.width/2-pw/2,innerWidth-pw-12));
+  var top=r.bottom+8;if(top+ph>innerHeight-12)top=Math.max(12,r.top-ph-8);
+  pop.style.left=left+'px';pop.style.top=top+'px';
+}
+document.addEventListener('click',function(e){
+  var b=e.target.closest&&e.target.closest('.ib');
+  if(b){e.preventDefault();e.stopPropagation();if(popBtn===b&&popPinned)hideInfo();else showInfo(b,true);return;}
+  if(!e.target.closest('#infoPop'))hideInfo();
+},true);
+document.addEventListener('mouseover',function(e){var b=e.target.closest&&e.target.closest('.ib');if(b&&!popPinned&&window.matchMedia('(hover: hover)').matches)showInfo(b,false);});
+document.addEventListener('mouseout',function(e){var b=e.target.closest&&e.target.closest('.ib');if(b&&!popPinned)hideInfo();});
+document.addEventListener('focusin',function(e){var b=e.target.closest&&e.target.closest('.ib');if(b&&!popPinned)showInfo(b,false);});
+document.addEventListener('focusout',function(e){if(!popPinned&&e.target.closest&&e.target.closest('.ib'))hideInfo();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')hideInfo();});
+window.addEventListener('scroll',hideInfo,true);window.addEventListener('resize',hideInfo);
+
 /* ---------- controls ---------- */
 function buildRail(){
   var h='';
   CONTROLS.forEach(function(c){
-    if(c.sec){h+='<h2>'+c.sec+'</h2>';return;}
+    if(c.sec){h+='<h2>'+c.sec+ib(SECKEY[c.sec])+'</h2>';return;}
     if(c.t==='range'){
-      h+='<div class="ctl"><label for="c-'+c.k+'">'+c.l+'</label><output id="o-'+c.k+'" for="c-'+c.k+'"></output>'+
+      h+='<div class="ctl"><label for="c-'+c.k+'">'+c.l+ib(c.k)+'</label><output id="o-'+c.k+'" for="c-'+c.k+'"></output>'+
       '<input type="range" id="c-'+c.k+'" min="'+c.min+'" max="'+c.max+'" step="'+c.step+'">'+(c.hint?'<div class="hint">'+c.hint+'</div>':'')+'</div>';
     } else if(c.t==='seg'){
-      h+='<div class="ctl" role="radiogroup" aria-label="'+c.l+'"><span class="lab">'+c.l+'</span><span></span><div class="seg">';
+      h+='<div class="ctl" role="radiogroup" aria-label="'+c.l+'"><span class="lab">'+c.l+ib(c.k)+'</span><span></span><div class="seg">';
       c.opts.forEach(function(o){
         h+='<label><input type="radio" name="c-'+c.k+'" value="'+o+'"><span>'+(c.names?c.names[o]:o)+'</span></label>';
       });
       h+='</div></div>';
     } else if(c.t==='tgl'){
-      h+='<label class="tgl"><span class="t">'+c.l+'</span><input type="checkbox" id="c-'+c.k+'"></label>';
+      h+='<label class="tgl"><span class="t">'+c.l+ib(c.k)+'</span><input type="checkbox" id="c-'+c.k+'"></label>';
     }
   });
   h+='<div class="totals" id="totals"></div>';
@@ -424,7 +508,7 @@ function renderCards(){
     {k:'Cost of this run',v:'$'+r.cost.toFixed(r.cost<10?2:0),s:S.workers+' executors x '+S.cores+' cores x '+fmtT(r.T),cls:'',d:delta(r.cost,baseline&&baseline.cost,true)}
   ];
   $('#cards').innerHTML=cards.map(function(c){
-    return '<div class="card '+c.cls+'"><div class="k">'+c.k+'</div><div class="v">'+c.v+'</div><div class="s">'+c.s+'</div>'+(c.d?'<div>'+c.d+'</div>':'')+'</div>';
+    return '<div class="card '+c.cls+'"><div class="k">'+c.k+ib(CARDKEY[c.k])+'</div><div class="v">'+c.v+'</div><div class="s">'+c.s+'</div>'+(c.d?'<div>'+c.d+'</div>':'')+'</div>';
   }).join('');
 }
 
@@ -612,6 +696,7 @@ function stopPlay(){play.playing=false;$('#playBtn').textContent=play.p>=1?'Repl
 
 /* ---------- main ---------- */
 function refresh(autoplay){
+  hideInfo();
   sim=simulate(S);
   syncControls();markPresets();renderCards();renderMem();renderDiag();
   $('#clusterMeta').textContent=S.workers+' executors x '+S.cores+' cores = '+fmtInt(sim.cores)+' cores, '+S.mem+' GB each';
@@ -626,6 +711,15 @@ if(window.matchMedia){var mq=window.matchMedia('(prefers-color-scheme: dark)');v
 new MutationObserver(function(){if(sim){drawTasks();drawAll();}}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
 
 buildRail();buildPresets();
+(function decorate(){
+  $('#presets').insertAdjacentHTML('beforeend',ib('scen'));
+  (function(){var d=$('#demoBtn'),w=document.createElement('div');w.className='demo-row';d.parentNode.insertBefore(w,d);w.appendChild(d);w.insertAdjacentHTML('beforeend',ib('demo'));})();
+  var H={'The cluster, replayed':'cluster','Cores busy over time':'utilchart','Task durations, big stage':'taskchart','Memory per task':'memory','What the cluster is telling you':'diag'};
+  document.querySelectorAll('h3').forEach(function(h){var k=H[h.textContent.trim()];if(k)h.insertAdjacentHTML('beforeend',ib(k));});
+  $('.legend').insertAdjacentHTML('beforeend',ib('legend'));
+  $('.player').insertAdjacentHTML('beforeend',ib('player'));
+  $('#pinBtn').insertAdjacentHTML('afterend',ib('pin'));
+})();
 $('#playBtn').addEventListener('click',function(){if(play.playing)stopPlay();else startPlay(false);});
 $('#scrub').addEventListener('input',function(e){play.playing=false;play.p=e.target.value/1000;$('#playBtn').textContent='Play';drawAll();});
 $('#diag').addEventListener('click',function(e){
@@ -712,7 +806,7 @@ $('#demoBtn').addEventListener('click',function(){if(demo.on)return;demoStart();
 $('#demoPause').addEventListener('click',function(){demo.paused=!demo.paused;this.textContent=demo.paused?'Resume':'Pause';if(demo.paused)stopPlay();else if(play.p<1)startPlay(false);});
 $('#demoNext').addEventListener('click',demoNext);
 $('#demoExit').addEventListener('click',function(){demoExit(false);});
-['#rail','#presets','#diag','#scrub','#pinBtn'].forEach(function(sel){$(sel).addEventListener('pointerdown',function(){if(demo.on)demoExit(false);});});
+['#rail','#presets','#diag','#scrub','#pinBtn'].forEach(function(sel){$(sel).addEventListener('pointerdown',function(e){if(demo.on&&!(e.target.closest&&e.target.closest('.ib')))demoExit(false);});});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&demo.on)demoExit(false);});
 (function(){var seen=false;try{seen=localStorage.getItem('sparkDemoSeen')==='1';}catch(e){}
   var q=location.search;var force=/[?&]demo=1/.test(q),off=/[?&]demo=0/.test(q);
